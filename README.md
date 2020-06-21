@@ -21,17 +21,20 @@ k = Bidirectional(GRU(t_dim))(k)
 
 在实验室2080的机器上，跑了13个小时，达到0.744的f1
 
-![avatar](pic/DGCNN result.png)
 
-![avatar](pic/DGCNN.png)
+
+![image]("https://github.com/xzk-seu/DGCNN/raw/master/pic/DGCNN%20result.png")
+
+![image](https://github.com/xzk-seu/DGCNN/blob/master/pic/DGCNN.png)
 
 数据集和词向量太大，需要额外下载
 ```bibtex
 链接: https://pan.baidu.com/s/18GPchKhhqcDuD1zVJAPAgQ  密码: 2d1l
 ```
 
-![avatar](pic/data.png)
 
-![avatar](pic/wiki.png)
+![image](https://github.com/xzk-seu/DGCNN/blob/master/pic/data.png)
+
+![image](https://github.com/xzk-seu/DGCNN/blob/master/pic/wiki.png)
 
 
