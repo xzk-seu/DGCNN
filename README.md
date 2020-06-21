@@ -23,7 +23,7 @@ k = Bidirectional(GRU(t_dim))(k)
 
 
 
-![image]("https://github.com/xzk-seu/DGCNN/blob/master/pic/DGCNN%20result.png")
+![image](https://github.com/xzk-seu/DGCNN/blob/master/pic/DGCNN%20result.png)
 
 ![image](https://github.com/xzk-seu/DGCNN/blob/master/pic/DGCNN.png)
 
