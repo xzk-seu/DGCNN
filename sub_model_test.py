@@ -1,11 +1,11 @@
 import numpy as np
 import paddle.fluid as fluid
-from data_loader import DataGenerator, DataGeneratorPaddle
+from data_loader import DataGeneratorPaddle
 from conv1d import Conv1d, DilatedGatedConv1d
 from tqdm import tqdm
 import os
 
-EPOCH = 10
+EPOCH = 60
 BATCH_SIZE = 64
 USE_GPU = True
 LEARNING_RATE = 1e-5
@@ -37,9 +37,7 @@ class SubjectModel(fluid.dygraph.Layer):
         self.h_conv1d = Conv1d(input_dim=256, output_dim=self.char_size, kernel_size=3, activation="relu")
 
     def forward(self, inputs: list):
-        t1, t2 = inputs
-        mask = fluid.layers.unsqueeze(t1, [2])
-        mask = fluid.layers.cast((mask > 0), "float32")
+        t1, t2, mask = inputs
 
         pid = position_id(t1)
 
@@ -78,6 +76,7 @@ class SubjectModel(fluid.dygraph.Layer):
         h = self.h_conv1d(h)
         ps1 = fluid.layers.fc(h, 2, num_flatten_dims=2, act="sigmoid")
         ps2 = fluid.layers.fc(h, 2, num_flatten_dims=2, act="sigmoid")
+
         ps1 = ps1 * pn1
         ps2 = ps2 * pn2
 
@@ -128,21 +127,30 @@ class MyModel(object):
                                                       parameter_list=sub_model.parameters())
 
             for epoch in range(EPOCH):
-                data_loader = fluid.io.DataLoader.from_generator(capacity=10)
+                data_loader = fluid.io.DataLoader.from_generator(capacity=64)
                 data_loader.set_batch_generator(self.data_generate.batch_generator_creator(), places=place)
                 for bt_id, data in tqdm(enumerate(data_loader())):
-                # for data in data_loader():
+                    # for data in data_loader():
                     t1_in, t2_in, s1_in, s2_in, k1_in, k2_in, o1_in, o2_in = data
                     t1 = fluid.dygraph.to_variable(t1_in)
                     t2 = fluid.dygraph.to_variable(t2_in)
                     s1 = fluid.dygraph.to_variable(s1_in)
                     s2 = fluid.dygraph.to_variable(s2_in)
-                    ps1, ps2 = sub_model([t1, t2])
+
+                    mask = fluid.layers.unsqueeze(t1, [2])
+                    mask = fluid.layers.cast((mask > 0), "float32")
+
+                    ps1, ps2 = sub_model([t1, t2, mask])
 
                     s1 = fluid.layers.cast(s1, "int64")
                     s2 = fluid.layers.cast(s2, "int64")
+                    s1 = fluid.layers.unsqueeze(s1, [2])
+                    s2 = fluid.layers.unsqueeze(s2, [2])
+
                     s1_loss = fluid.layers.cross_entropy(ps1, s1)
                     s2_loss = fluid.layers.cross_entropy(ps2, s2)
+                    s1_loss = fluid.layers.reduce_sum(s1_loss * mask) / fluid.layers.reduce_sum(mask)
+                    s2_loss = fluid.layers.reduce_sum(s2_loss * mask) / fluid.layers.reduce_sum(mask)
 
                     ave_loss = fluid.layers.mean(s1_loss+s2_loss)
 
@@ -153,12 +161,12 @@ class MyModel(object):
                     optimizer.minimize(ave_loss)
                     sub_model.clear_gradients()
 
-            save_path = os.path.join(os.getcwd(), os.pardir, "dygraph_model")
-            if os.path.exists(save_path):
-                os.makedirs(save_path)
-            file_name = "{}_sub_model_{}".format(epoch, ave_loss.numpy())
-            save_path = os.path.join(save_path, file_name)
-            fluid.save_dygraph(sub_model.state_dict(), save_path)
+                save_path = os.path.join(os.getcwd(), os.pardir, "dygraph_model")
+                if not os.path.exists(save_path):
+                    os.makedirs(save_path)
+                file_name = "%d_sub_model_%.7f" % (epoch, float(ave_loss.numpy()))
+                save_path = os.path.join(save_path, file_name)
+                fluid.save_dygraph(sub_model.state_dict(), save_path)
 
 
 def my_test():
