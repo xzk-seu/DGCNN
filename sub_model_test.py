@@ -1,61 +1,20 @@
 import numpy as np
 import paddle.fluid as fluid
-from data_loader import DataGenerator
-import paddle
+from data_loader import DataGenerator, DataGeneratorPaddle
+from conv1d import Conv1d, DilatedGatedConv1d
+from tqdm import tqdm
+import os
 
-EPOCH = 1
+EPOCH = 10
 BATCH_SIZE = 64
 USE_GPU = True
+LEARNING_RATE = 1e-5
 
-
-class Conv1d(fluid.dygraph.Layer):
-    def __init__(self, input_dim, output_dim, kernel_size, activation=None, dilation_rate=1):
-        super(Conv1d, self).__init__(None)
-
-        self.dilation_rate = dilation_rate
-        self.kernel_size = kernel_size
-        self.rec_field = self.kernel_size + (self.kernel_size - 1) * (self.dilation_rate - 1)  # 感受野 等效核
-        self.pad = self.rec_field // 2
-
-        self.con1d = fluid.dygraph.Conv2D(num_channels=1,
-                                          num_filters=output_dim,
-                                          filter_size=(3, input_dim),
-                                          padding=(self.pad, 0),
-                                          dilation=(dilation_rate, 1),
-                                          act=activation)
-
-    def forward(self, seq):
-        h = fluid.layers.unsqueeze(seq, axes=[1])
-        h = self.con1d(h)
-        h = fluid.layers.squeeze(h, axes=[3])
-        h = fluid.layers.transpose(h, perm=[0, 2, 1])
-        return h
-
-
-class DilatedGatedConv1d(fluid.dygraph.Layer):
-    def __init__(self, dim, dilation_rate):
-        super(DilatedGatedConv1d, self).__init__(None)
-        self.dim = int(dim)
-        self.con1d = Conv1d(input_dim=self.dim, output_dim=2 * self.dim, kernel_size=3, dilation_rate=dilation_rate)
-
-    def forward(self, seq, mask):
-        """
-        膨胀门卷积（残差式）
-        """
-        h = self.con1d(seq)
-
-        def _gate(x):
-            dropout_rate = 0.1
-            s, h = x
-            g, h = h[:, :, :self.dim], h[:, :, self.dim:]
-            drop_out = fluid.dygraph.Dropout(p=dropout_rate)
-            g = drop_out(g)
-
-            g = fluid.layers.sigmoid(g)
-            return g * s + (1 - g) * h
-        seq = _gate([seq, h])
-        seq = seq * mask
-        return seq
+"""
+预测subject的模型能跑通，但是似乎不收敛（考虑调学习率），
+速度较慢
+预测部分还没写
+"""
 
 
 class SubjectModel(fluid.dygraph.Layer):
@@ -153,7 +112,7 @@ def position_id(x):
 
 
 class MyModel(object):
-    def __init__(self, data: DataGenerator):
+    def __init__(self, data: DataGeneratorPaddle):
         self.data_generate = data
 
     def train(self):
@@ -163,11 +122,16 @@ class MyModel(object):
             sub_model = SubjectModel(max_len=self.data_generate.data_loader.maxlen,
                                      char_size=self.data_generate.data_loader.char_size,
                                      char_id_len=len(self.data_generate.data_loader.char2id))
-            optimizer = fluid.optimizer.SGDOptimizer(learning_rate=0.001, parameter_list=sub_model.parameters())
+            # optimizer = fluid.optimizer.SGDOptimizer(learning_rate=LEARNING_RATE,
+            # parameter_list=sub_model.parameters())
+            optimizer = fluid.optimizer.AdamOptimizer(learning_rate=LEARNING_RATE,
+                                                      parameter_list=sub_model.parameters())
 
             for epoch in range(EPOCH):
-                for bt_id, data in enumerate(self.data_generate.__iter__()):
-                    data, _ = data
+                data_loader = fluid.io.DataLoader.from_generator(capacity=10)
+                data_loader.set_batch_generator(self.data_generate.batch_generator_creator(), places=place)
+                for bt_id, data in tqdm(enumerate(data_loader())):
+                # for data in data_loader():
                     t1_in, t2_in, s1_in, s2_in, k1_in, k2_in, o1_in, o2_in = data
                     t1 = fluid.dygraph.to_variable(t1_in)
                     t2 = fluid.dygraph.to_variable(t2_in)
@@ -182,14 +146,19 @@ class MyModel(object):
 
                     ave_loss = fluid.layers.mean(s1_loss+s2_loss)
 
-                    if bt_id % 10 == 0:
+                    if bt_id % 100 == 0:
                         print('epoch:{}\tbatch:{}\tloss:{}'.format(epoch, bt_id, ave_loss.numpy()))
 
                     ave_loss.backward()
                     optimizer.minimize(ave_loss)
                     sub_model.clear_gradients()
 
-            fluid.save_dygraph(sub_model.state_dict(), 'sub.model')
+            save_path = os.path.join(os.getcwd(), os.pardir, "dygraph_model")
+            if os.path.exists(save_path):
+                os.makedirs(save_path)
+            file_name = "{}_sub_model_{}".format(epoch, ave_loss.numpy())
+            save_path = os.path.join(save_path, file_name)
+            fluid.save_dygraph(sub_model.state_dict(), save_path)
 
 
 def my_test():
@@ -222,7 +191,7 @@ def my_test():
 
 
 def main():
-    data_generate = DataGenerator(train=True, batch_size=64)
+    data_generate = DataGeneratorPaddle(train=True, batch_size=64)
     my_model = MyModel(data_generate)
     my_model.train()
 

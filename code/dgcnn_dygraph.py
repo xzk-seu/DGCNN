@@ -1,11 +1,14 @@
 import numpy as np
 import paddle.fluid as fluid
-from data_loader import DataGenerator
+from data_loader import DataGenerator, DataGeneratorPaddle
 from conv1d import Conv1d, DilatedGatedConv1d
+from tqdm import tqdm
+import os
 
-EPOCH = 1
+EPOCH = 60
 BATCH_SIZE = 64
 USE_GPU = False
+LEARNING_RATE = 1e-5
 
 """
 预测subject的模型能跑通，但是似乎不收敛（考虑调学习率），
@@ -109,7 +112,7 @@ def position_id(x):
 
 
 class MyModel(object):
-    def __init__(self, data: DataGenerator):
+    def __init__(self, data: DataGeneratorPaddle):
         self.data_generate = data
 
     def train(self):
@@ -119,11 +122,16 @@ class MyModel(object):
             sub_model = SubjectModel(max_len=self.data_generate.data_loader.maxlen,
                                      char_size=self.data_generate.data_loader.char_size,
                                      char_id_len=len(self.data_generate.data_loader.char2id))
-            optimizer = fluid.optimizer.SGDOptimizer(learning_rate=0.001, parameter_list=sub_model.parameters())
+            # optimizer = fluid.optimizer.SGDOptimizer(learning_rate=LEARNING_RATE,
+            # parameter_list=sub_model.parameters())
+            optimizer = fluid.optimizer.AdamOptimizer(learning_rate=LEARNING_RATE,
+                                                      parameter_list=sub_model.parameters())
 
             for epoch in range(EPOCH):
-                for bt_id, data in enumerate(self.data_generate.__iter__()):
-                    data, _ = data
+                data_loader = fluid.io.DataLoader.from_generator(capacity=64)
+                data_loader.set_batch_generator(self.data_generate.batch_generator_creator(), places=place)
+                for bt_id, data in tqdm(enumerate(data_loader())):
+                # for data in data_loader():
                     t1_in, t2_in, s1_in, s2_in, k1_in, k2_in, o1_in, o2_in = data
                     t1 = fluid.dygraph.to_variable(t1_in)
                     t2 = fluid.dygraph.to_variable(t2_in)
@@ -145,7 +153,12 @@ class MyModel(object):
                     optimizer.minimize(ave_loss)
                     sub_model.clear_gradients()
 
-            fluid.save_dygraph(sub_model.state_dict(), 'sub.model')
+            save_path = os.path.join(os.getcwd(), os.pardir, "dygraph_model")
+            if os.path.exists(save_path):
+                os.makedirs(save_path)
+            file_name = "{}_sub_model_{}".format(epoch, ave_loss.numpy())
+            save_path = os.path.join(save_path, file_name)
+            fluid.save_dygraph(sub_model.state_dict(), save_path)
 
 
 def my_test():
@@ -178,7 +191,7 @@ def my_test():
 
 
 def main():
-    data_generate = DataGenerator(train=True, batch_size=64)
+    data_generate = DataGeneratorPaddle(train=True, batch_size=64)
     my_model = MyModel(data_generate)
     my_model.train()
 

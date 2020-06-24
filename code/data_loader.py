@@ -261,4 +261,155 @@ class DataGenerator():
                             O2, np.zeros(self.data_loader.num_classes))
                         K1, K2 = np.array(K1), np.array(K2)
                         yield [T1, T2, S1, S2, K1, K2, O1, O2], None
+                        # yield [T1, T2, S1, S2, K1, K2, O1, O2]
+                        T1, T2, S1, S2, K1, K2, O1, O2, = [], [], [], [], [], [], [], []
+
+
+class DataGeneratorPaddle:
+    def __init__(self, train=True, batch_size=64):
+
+        self.data_loader = DataLoader()
+        self.data_loader.data_loader()
+        if train:
+            self.data = self.data_loader.train_data
+        else:
+            self.data = self.data_loader.dev_data
+
+        self.batch_size = batch_size
+        self.steps = len(self.data) // self.batch_size
+        if len(self.data) % self.batch_size != 0:
+            self.steps += 1
+
+    def __len__(self):
+        return self.steps
+
+    def batch_generator_creator(self):
+        def __reader__():
+            idxs = list(range(len(self.data)))
+            np.random.shuffle(idxs)
+            T1, T2, S1, S2, K1, K2, O1, O2, = [], [], [], [], [], [], [], []
+            for i in idxs:
+                spo_list_key = 'spo_list'  # if np.random.random() > 0.5 else 'spo_list_with_pred'
+                d = self.data_loader.random_generate(
+                    self.data[i], spo_list_key)
+                text = d['text'][:self.data_loader.maxlen]
+                text_words = self.data_loader.tokenize(text)
+                text = ''.join(text_words)
+                items = {}
+                for sp in d[spo_list_key]:
+                    subjectid = text.find(sp[0])
+                    objectid = text.find(sp[2])
+                    if subjectid != -1 and objectid != -1:
+                        key = (subjectid, subjectid + len(sp[0]))
+                        if key not in items:
+                            items[key] = []
+                        items[key].append((objectid,
+                                           objectid + len(sp[2]),
+                                           self.data_loader.predicate2id[sp[1]]))
+                if items:
+                    T1.append([self.data_loader.char2id.get(c, 1)
+                               for c in text])  # 1是unk，0是padding
+                    T2.append(text_words)
+                    s1, s2 = np.zeros(len(text)), np.zeros(len(text))
+                    for j in items:
+                        s1[j[0]] = 1
+                        s2[j[1] - 1] = 1
+                    k1, k2 = np.array(list(items.keys())).T
+                    k1 = choice(k1)
+                    k2 = choice(k2[k2 >= k1])
+                    o1, o2 = np.zeros((len(text), self.data_loader.num_classes)), np.zeros(
+                        (len(text), self.data_loader.num_classes))
+                    for j in items.get((k1, k2), []):
+                        o1[j[0]][j[2]] = 1
+                        o2[j[1] - 1][j[2]] = 1
+                    S1.append(s1)
+                    S2.append(s2)
+                    K1.append([k1])
+                    K2.append([k2 - 1])
+                    O1.append(o1)
+                    O2.append(o2)
+                    # t1为字编码，长度为各个句子长度，seq_padding之后长度统一为最长句子的长度
+                    # t2为词，长度为各个句子中词的个数，sent2vec之后为 最长句子长度 * 词向量维度
+                    # s1 s2为句子中的所有subject的头尾指针向量，one-hot，长度为句子长度, seq_padding之后长度统一为最长句子的长度
+                    # k1 k2为随机选中的句子中的某个subject的开头结尾，长度为1，数值为头尾在句子中的位置
+                    # o1 o2为矩阵，sent_len * num_classes，o[i][j]为1表示句子中位置i是在关系j下的object,seq_padding之后长度统一为最长句子的长度
+                    # 数据到达此处时为list类型，经过下面统一的处理，为ndarry
+                    if len(T1) == self.batch_size or i == idxs[-1]:
+                        T1 = self.data_loader.seq_padding(T1)
+                        T2 = self.data_loader.sent2vec(T2)
+                        S1 = self.data_loader.seq_padding(S1)
+                        S2 = self.data_loader.seq_padding(S2)
+                        O1 = self.data_loader.seq_padding(
+                            O1, np.zeros(self.data_loader.num_classes))
+                        O2 = self.data_loader.seq_padding(
+                            O2, np.zeros(self.data_loader.num_classes))
+                        K1, K2 = np.array(K1), np.array(K2)
+                        yield [T1, T2, S1, S2, K1, K2, O1, O2]
+                        T1, T2, S1, S2, K1, K2, O1, O2, = [], [], [], [], [], [], [], []
+
+        return __reader__
+
+    def __iter__(self):
+        while True:
+            idxs = list(range(len(self.data)))
+            np.random.shuffle(idxs)
+            T1, T2, S1, S2, K1, K2, O1, O2, = [], [], [], [], [], [], [], []
+            for i in idxs:
+                spo_list_key = 'spo_list'  # if np.random.random() > 0.5 else 'spo_list_with_pred'
+                d = self.data_loader.random_generate(
+                    self.data[i], spo_list_key)
+                text = d['text'][:self.data_loader.maxlen]
+                text_words = self.data_loader.tokenize(text)
+                text = ''.join(text_words)
+                items = {}
+                for sp in d[spo_list_key]:
+                    subjectid = text.find(sp[0])
+                    objectid = text.find(sp[2])
+                    if subjectid != -1 and objectid != -1:
+                        key = (subjectid, subjectid + len(sp[0]))
+                        if key not in items:
+                            items[key] = []
+                        items[key].append((objectid,
+                                           objectid + len(sp[2]),
+                                           self.data_loader.predicate2id[sp[1]]))
+                if items:
+                    T1.append([self.data_loader.char2id.get(c, 1)
+                               for c in text])  # 1是unk，0是padding
+                    T2.append(text_words)
+                    s1, s2 = np.zeros(len(text)), np.zeros(len(text))
+                    for j in items:
+                        s1[j[0]] = 1
+                        s2[j[1] - 1] = 1
+                    k1, k2 = np.array(list(items.keys())).T
+                    k1 = choice(k1)
+                    k2 = choice(k2[k2 >= k1])
+                    o1, o2 = np.zeros((len(text), self.data_loader.num_classes)), np.zeros(
+                        (len(text), self.data_loader.num_classes))
+                    for j in items.get((k1, k2), []):
+                        o1[j[0]][j[2]] = 1
+                        o2[j[1] - 1][j[2]] = 1
+                    S1.append(s1)
+                    S2.append(s2)
+                    K1.append([k1])
+                    K2.append([k2 - 1])
+                    O1.append(o1)
+                    O2.append(o2)
+                    # t1为字编码，长度为各个句子长度，seq_padding之后长度统一为最长句子的长度
+                    # t2为词，长度为各个句子中词的个数，sent2vec之后为 最长句子长度 * 词向量维度
+                    # s1 s2为句子中的所有subject的头尾指针向量，one-hot，长度为句子长度, seq_padding之后长度统一为最长句子的长度
+                    # k1 k2为随机选中的句子中的某个subject的开头结尾，长度为1，数值为头尾在句子中的位置
+                    # o1 o2为矩阵，sent_len * num_classes，o[i][j]为1表示句子中位置i是在关系j下的object,seq_padding之后长度统一为最长句子的长度
+                    # 数据到达此处时为list类型，经过下面统一的处理，为ndarry
+                    if len(T1) == self.batch_size or i == idxs[-1]:
+                        T1 = self.data_loader.seq_padding(T1)
+                        T2 = self.data_loader.sent2vec(T2)
+                        S1 = self.data_loader.seq_padding(S1)
+                        S2 = self.data_loader.seq_padding(S2)
+                        O1 = self.data_loader.seq_padding(
+                            O1, np.zeros(self.data_loader.num_classes))
+                        O2 = self.data_loader.seq_padding(
+                            O2, np.zeros(self.data_loader.num_classes))
+                        K1, K2 = np.array(K1), np.array(K2)
+                        # yield [T1, T2, S1, S2, K1, K2, O1, O2], None
+                        yield [T1, T2, S1, S2, K1, K2, O1, O2]
                         T1, T2, S1, S2, K1, K2, O1, O2, = [], [], [], [], [], [], [], []
