@@ -44,7 +44,7 @@ class SubjectModel(fluid.dygraph.Layer):
         pv = self.position_embedding(pid)
         t1 = self.t1_embedding(t1)
 
-        t2 = fluid.layers.cast(t2, "float32")
+        t2 = t2.astype("float32")
         t2 = self.t2_fc(t2)
 
         t = fluid.layers.elementwise_add(t1, t2)
@@ -74,8 +74,8 @@ class SubjectModel(fluid.dygraph.Layer):
         h = fluid.nets.scaled_dot_product_attention(t, t, t, num_heads=8)
         h = fluid.layers.concat([t, h], axis=-1)
         h = self.h_conv1d(h)
-        ps1 = fluid.layers.fc(h, 2, num_flatten_dims=2, act="sigmoid")
-        ps2 = fluid.layers.fc(h, 2, num_flatten_dims=2, act="sigmoid")
+        ps1 = fluid.layers.fc(h, 1, num_flatten_dims=2, act="sigmoid")
+        ps2 = fluid.layers.fc(h, 1, num_flatten_dims=2, act="sigmoid")
 
         ps1 = ps1 * pn1
         ps2 = ps2 * pn2
@@ -142,13 +142,17 @@ class MyModel(object):
 
                     ps1, ps2 = sub_model([t1, t2, mask])
 
-                    s1 = fluid.layers.cast(s1, "int64")
-                    s2 = fluid.layers.cast(s2, "int64")
+                    # s1 = fluid.layers.cast(s1, "float32")
+                    # s2 = fluid.layers.cast(s2, "float32")
+                    s1 = s1.astype("float32")
+                    s2 = s2.astype("float32")
                     s1 = fluid.layers.unsqueeze(s1, [2])
                     s2 = fluid.layers.unsqueeze(s2, [2])
 
-                    s1_loss = fluid.layers.cross_entropy(ps1, s1)
-                    s2_loss = fluid.layers.cross_entropy(ps2, s2)
+                    # s1_loss = fluid.layers.cross_entropy(ps1, s1)
+                    # s2_loss = fluid.layers.cross_entropy(ps2, s2)
+                    s1_loss = fluid.layers.cross_entropy(ps1, s1, soft_label=True)
+                    s2_loss = fluid.layers.cross_entropy(ps2, s2, soft_label=True)
                     s1_loss = fluid.layers.reduce_sum(s1_loss * mask) / fluid.layers.reduce_sum(mask)
                     s2_loss = fluid.layers.reduce_sum(s2_loss * mask) / fluid.layers.reduce_sum(mask)
 
