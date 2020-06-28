@@ -4,6 +4,7 @@ from data_loader import DataGeneratorPaddle
 from conv1d import Conv1d, DilatedGatedConv1d
 from tqdm import tqdm
 import os
+from BiGRU import BiGRU
 
 EPOCH = 60
 BATCH_SIZE = 64
@@ -17,27 +18,31 @@ LEARNING_RATE = 1e-5
 """
 
 
-class SubjectModel(fluid.dygraph.Layer):
-    def __init__(self, max_len, char_size, char_id_len):
-        super(SubjectModel, self).__init__(None)
+class MyModel(fluid.dygraph.Layer):
+    def __init__(self, max_len, char_size, char_id_len, class_num):
+        super(MyModel, self).__init__(None)
         self.max_len = max_len  # 256
         self.char_size = char_size  # 128
         self.char_id_len = char_id_len  # 7028
         self.wv_len = 256
         self.h_dim = 128
+        self.class_num = class_num
 
         t1_emb_size = [self.char_id_len + 2, self.char_size]
         self.t1_embedding = fluid.dygraph.Embedding(size=t1_emb_size)
 
-        pos_emb_size = [self.max_len, self.char_size]
-        self.position_embedding = fluid.dygraph.Embedding(size=pos_emb_size)
+        self.pos_emb_size = [self.max_len, self.char_size]
+        self.position_embedding = fluid.dygraph.Embedding(size=self.pos_emb_size)
 
         self.t2_fc = fluid.dygraph.Linear(self.wv_len, char_size)
 
         self.h_conv1d = Conv1d(input_dim=256, output_dim=self.char_size, kernel_size=3, activation="relu")
+        self.h_conv1d_2 = Conv1d(input_dim=256, output_dim=self.char_size, kernel_size=3, activation="relu")
+
+        self.bigru = BiGRU(self.h_dim)
 
     def forward(self, inputs: list):
-        t1, t2, mask = inputs
+        t1, t2, k1, k2, mask = inputs
 
         pid = position_id(t1)
 
@@ -63,14 +68,6 @@ class SubjectModel(fluid.dygraph.Layer):
         pn2 = fluid.layers.fc(t, self.char_size, num_flatten_dims=2, act="relu")
         pn2 = fluid.layers.fc(pn2, 1, num_flatten_dims=2, act="sigmoid")
 
-        # h = Attention(8, 16)([t, t, t, mask])
-        # h = Concatenate()([t, h])
-        # h = Conv1D(self.data_generate.data_loader.char_size,
-        #            3, activation='relu', padding='same')(h)
-        # ps1 = Dense(1, activation='sigmoid')(h)
-        # ps2 = Dense(1, activation='sigmoid')(h)
-        # ps1 = Lambda(lambda x: x[0] * x[1])([ps1, pn1])
-        # ps2 = Lambda(lambda x: x[0] * x[1])([ps2, pn2])
         h = fluid.nets.scaled_dot_product_attention(t, t, t, num_heads=8)
         h = fluid.layers.concat([t, h], axis=-1)
         h = self.h_conv1d(h)
@@ -79,8 +76,98 @@ class SubjectModel(fluid.dygraph.Layer):
 
         ps1 = ps1 * pn1
         ps2 = ps2 * pn2
+        # subject end
 
-        return ps1, ps2
+        t_max = seq_maxpool([t, mask])
+        pc = fluid.layers.fc(t_max, size=self.char_size, act="relu")
+        pc = fluid.layers.fc(pc, size=self.class_num)
+
+        # k = Lambda(self.get_k_inter, output_shape=(6, t_dim))([t, k1, k2])
+        k = get_k_inter([t, k1, k2], 6)
+        k, _ = self.bigru(k, 6)
+
+        # k1v = position_embedding(Lambda(self.position_id)([t, k1]))  # (batch, len, 128)
+        # k2v = position_embedding(Lambda(self.position_id)([t, k2]))  # (batch, len, 128)
+        # kv = Concatenate()([k1v, k2v])  # 默认按最后一维连接 (batch, len, 256)  相对位置嵌入
+        # k = Lambda(lambda x: K.expand_dims(x[0], 1) + x[1])([k, kv])
+        k1v = position_id([t, k1])
+        k1v = fluid.layers.embedding(k1v, self.pos_emb_size)
+        k2v = position_id([t, k2])
+        k2v = fluid.layers.embedding(k2v, self.pos_emb_size)
+        kv = fluid.layers.concat([k1v, k2v], -1)
+        k = fluid.layers.unsqueeze(k, 1) + kv
+
+        # h = Attention(8, 16)([t, t, t, mask])
+        # h = Concatenate()([t, h, k])  # (batch, len, 128+128+256) = (batch, len, 512)
+        # h = Conv1D(self.data_generate.data_loader.char_size,
+        #            3, activation='relu', padding='same')(h)  # (batch, len, 128)
+        h = fluid.nets.scaled_dot_product_attention(t, t, t, num_heads=8)
+        h = fluid.layers.concat([t, h, k], -1)
+        h = self.h_conv1d_2(h)
+
+        # po = Dense(1, activation='sigmoid')(h)  # 预测句子中该位置是否有obj
+        # po1 = Dense(self.data_generate.data_loader.num_classes,
+        #             activation='sigmoid')(h)
+        # po2 = Dense(self.data_generate.data_loader.num_classes,
+        #             activation='sigmoid')(h)
+        #
+        # po1 = Lambda(lambda x: x[0] * x[1] * x[2] * x[3])([po, po1, pc, pn1])
+        # po2 = Lambda(lambda x: x[0] * x[1] * x[2] * x[3])([po, po2, pc, pn2])
+        po = fluid.layers.fc(h, 1, act="sigmoid")
+        po1 = fluid.layers.fc(h, self.class_num, act="sigmoid")
+        po2 = fluid.layers.fc(h, self.class_num, act="sigmoid")
+        po1 = po * po1 * pc * pn1
+        po2 = po * po2 * pc * pn2
+
+        return ps1, ps2, po1, po2
+
+
+def get_k_inter(x, n=6):
+    seq, k1, k2 = x
+    k1 = k1.astype("float32")
+    k2 = k2.astype("float32")
+
+    # [k2, 0.8*k2+0.2*k1, 0.6*k2+0.4*k1, 0.4*k2+0.6*k1, 0.2*k2+0.8*k1, k1]
+    # k_inter = [K.round(k1 * a + k2 * (1 - a))
+    #            for a in np.arange(n) / (n - 1.)]
+    k_inter = [fluid.layers.round(k1 * a + k2 * (1 - a)) for a in np.arange(n) / (n - 1.)]
+    k_inter = [seq_gather([seq, k]) for k in k_inter]
+    # k_inter = [K.expand_dims(k, 1) for k in k_inter]
+    k_inter = [fluid.layers.unsqueeze(k, 1) for k in k_inter]
+    # k_inter = K.concatenate(k_inter, 1)
+    k_inter = fluid.layers.concat(k_inter, 1)
+    return k_inter
+
+
+def seq_gather(x):
+    """seq是[None, seq_len, s_size]的格式，
+    idxs是[None, 1]的格式，在seq的第i个序列中选出第idxs[i]个向量，
+    最终输出[None, s_size]的向量。
+
+    取出seq矩阵中，seq[batch_idxs][idxs]对应的向量
+    """
+    seq, idxs = x
+    # idxs = K.cast(idxs, 'int32')
+    idxs = idxs.astype("int32")
+    # batch_idxs = K.arange(0, K.shape(seq)[0])
+    batch_idxs = fluid.layers.arange(0, seq.shape[0])
+    # batch_idxs = K.expand_dims(batch_idxs, 1)
+    batch_idxs = fluid.layers.unsqueeze(batch_idxs, 1).astype("int32")
+    # idxs = K.concatenate([batch_idxs, idxs], 1)
+    idxs = fluid.layers.concat([batch_idxs, idxs], 1)
+    r = fluid.layers.gather_nd(seq, idxs)
+    return r
+
+
+def seq_maxpool(x):
+    """seq是[None, seq_len, s_size]的格式，
+    mask是[None, seq_len, 1]的格式，先除去mask部分，
+    然后再做maxpooling。
+    """
+    seq, mask = x
+    seq -= (1 - mask) * 1e10
+    r = fluid.layers.reduce_max(seq, dim=1, keep_dim=True)
+    return r
 
 
 def position_id(x):
@@ -110,67 +197,79 @@ def position_id(x):
     return pid
 
 
-class MyModel(object):
-    def __init__(self, data: DataGeneratorPaddle):
-        self.data_generate = data
+def train(data_generate):
+    place = fluid.CUDAPlace(0) if USE_GPU else fluid.CPUPlace()
 
-    def train(self):
-        place = fluid.CUDAPlace(0) if USE_GPU else fluid.CPUPlace()
+    with fluid.dygraph.guard(place):
+        model = MyModel(max_len=data_generate.data_loader.maxlen,
+                            char_size=data_generate.data_loader.char_size,
+                            char_id_len=len(data_generate.data_loader.char2id),
+                            class_num=data_generate.data_loader.num_classes)
 
-        with fluid.dygraph.guard(place):
-            sub_model = SubjectModel(max_len=self.data_generate.data_loader.maxlen,
-                                     char_size=self.data_generate.data_loader.char_size,
-                                     char_id_len=len(self.data_generate.data_loader.char2id))
-            # optimizer = fluid.optimizer.SGDOptimizer(learning_rate=LEARNING_RATE,
-            # parameter_list=sub_model.parameters())
-            optimizer = fluid.optimizer.AdamOptimizer(learning_rate=LEARNING_RATE,
-                                                      parameter_list=sub_model.parameters())
+        # optimizer = fluid.optimizer.SGDOptimizer(learning_rate=LEARNING_RATE,
+        # parameter_list=model.parameters())
+        optimizer = fluid.optimizer.AdamOptimizer(learning_rate=LEARNING_RATE,
+                                                  parameter_list=model.parameters())
 
-            for epoch in range(EPOCH):
-                data_loader = fluid.io.DataLoader.from_generator(capacity=64)
-                data_loader.set_batch_generator(self.data_generate.batch_generator_creator(), places=place)
-                for bt_id, data in tqdm(enumerate(data_loader())):
-                    # for data in data_loader():
-                    t1_in, t2_in, s1_in, s2_in, k1_in, k2_in, o1_in, o2_in = data
-                    t1 = fluid.dygraph.to_variable(t1_in)
-                    t2 = fluid.dygraph.to_variable(t2_in)
-                    s1 = fluid.dygraph.to_variable(s1_in)
-                    s2 = fluid.dygraph.to_variable(s2_in)
+        for epoch in range(EPOCH):
+            data_loader = fluid.io.DataLoader.from_generator(capacity=64)
+            data_loader.set_batch_generator(data_generate.batch_generator_creator(), places=place)
+            for bt_id, data in tqdm(enumerate(data_loader())):
+                # for data in data_loader():
+                t1_in, t2_in, s1_in, s2_in, k1_in, k2_in, o1_in, o2_in = data
+                t1 = fluid.dygraph.to_variable(t1_in)
+                t2 = fluid.dygraph.to_variable(t2_in)
+                s1 = fluid.dygraph.to_variable(s1_in)
+                s2 = fluid.dygraph.to_variable(s2_in)
+                k1 = fluid.dygraph.to_variable(k1_in)
+                k2 = fluid.dygraph.to_variable(k2_in)
+                o1 = fluid.dygraph.to_variable(o1_in)
+                o2 = fluid.dygraph.to_variable(o2_in)
 
-                    mask = fluid.layers.unsqueeze(t1, [2])
-                    mask = fluid.layers.cast((mask > 0), "float32")
+                mask = fluid.layers.unsqueeze(t1, [2])
+                mask = fluid.layers.cast((mask > 0), "float32")
 
-                    ps1, ps2 = sub_model([t1, t2, mask])
+                ps1, ps2, po1, po2 = model([t1, t2, k1, k2, mask])
 
-                    # s1 = fluid.layers.cast(s1, "float32")
-                    # s2 = fluid.layers.cast(s2, "float32")
-                    s1 = s1.astype("float32")
-                    s2 = s2.astype("float32")
-                    s1 = fluid.layers.unsqueeze(s1, [2])
-                    s2 = fluid.layers.unsqueeze(s2, [2])
+                # s1 = fluid.layers.cast(s1, "float32")
+                # s2 = fluid.layers.cast(s2, "float32")
+                s1 = s1.astype("float32")
+                s2 = s2.astype("float32")
+                s1 = fluid.layers.unsqueeze(s1, [2])
+                s2 = fluid.layers.unsqueeze(s2, [2])
 
-                    # s1_loss = fluid.layers.cross_entropy(ps1, s1)
-                    # s2_loss = fluid.layers.cross_entropy(ps2, s2)
-                    s1_loss = fluid.layers.cross_entropy(ps1, s1, soft_label=True)
-                    s2_loss = fluid.layers.cross_entropy(ps2, s2, soft_label=True)
-                    s1_loss = fluid.layers.reduce_sum(s1_loss * mask) / fluid.layers.reduce_sum(mask)
-                    s2_loss = fluid.layers.reduce_sum(s2_loss * mask) / fluid.layers.reduce_sum(mask)
+                # s1_loss = fluid.layers.cross_entropy(ps1, s1)
+                # s2_loss = fluid.layers.cross_entropy(ps2, s2)
+                s1_loss = fluid.layers.cross_entropy(ps1, s1, soft_label=True)
+                s2_loss = fluid.layers.cross_entropy(ps2, s2, soft_label=True)
+                s1_loss = fluid.layers.reduce_sum(s1_loss * mask) / fluid.layers.reduce_sum(mask)
+                s2_loss = fluid.layers.reduce_sum(s2_loss * mask) / fluid.layers.reduce_sum(mask)
 
-                    ave_loss = fluid.layers.mean(s1_loss+s2_loss)
+                # o1_loss = K.sum(K.binary_crossentropy(o1, po1), 2, keepdims=True)
+                # o1_loss = K.sum(o1_loss * mask) / K.sum(mask)
+                # o2_loss = K.sum(K.binary_crossentropy(o2, po2), 2, keepdims=True)
+                # o2_loss = K.sum(o2_loss * mask) / K.sum(mask)
+                o1_loss = fluid.layers.cross_entropy(po1, o1, soft_label=True)
+                o1_loss = fluid.layers.reduce_sum(o1_loss * mask) / fluid.layers.reduce_sum(mask)
+                o2_loss = fluid.layers.cross_entropy(po2, o2, soft_label=True)
+                o2_loss = fluid.layers.reduce_sum(o2_loss * mask) / fluid.layers.reduce_sum(mask)
 
-                    if bt_id % 10 == 0:
-                        print('epoch:{}\tbatch:{}\tloss:{}'.format(epoch, bt_id, ave_loss.numpy()))
+                # ave_loss = fluid.layers.mean(s1_loss+s2_loss)
+                ave_loss = s1_loss + s2_loss + o1_loss + o2_loss
 
-                    ave_loss.backward()
-                    optimizer.minimize(ave_loss)
-                    sub_model.clear_gradients()
+                if bt_id % 10 == 0:
+                    print('epoch:{}\tbatch:{}\tloss:{}'.format(epoch, bt_id, ave_loss.numpy()))
 
-                save_path = os.path.join(os.getcwd(), os.pardir, "dygraph_model")
-                if not os.path.exists(save_path):
-                    os.makedirs(save_path)
-                file_name = "%d_sub_model_%.7f" % (epoch, float(ave_loss.numpy()))
-                save_path = os.path.join(save_path, file_name)
-                fluid.save_dygraph(sub_model.state_dict(), save_path)
+                ave_loss.backward()
+                optimizer.minimize(ave_loss)
+                model.clear_gradients()
+
+            save_path = os.path.join(os.getcwd(), os.pardir, "dygraph_model")
+            if not os.path.exists(save_path):
+                os.makedirs(save_path)
+            file_name = "%d_sub_model_%.7f" % (epoch, float(ave_loss.numpy()))
+            save_path = os.path.join(save_path, file_name)
+            fluid.save_dygraph(model.state_dict(), save_path)
 
 
 def my_test():
@@ -204,8 +303,7 @@ def my_test():
 
 def main():
     data_generate = DataGeneratorPaddle(train=True, batch_size=64)
-    my_model = MyModel(data_generate)
-    my_model.train()
+    train(data_generate)
 
 
 if __name__ == '__main__':
