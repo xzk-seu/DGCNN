@@ -11,7 +11,8 @@ from conv1d import Conv1d, DilatedGatedConv1d
 from data_loader import DataGeneratorPaddle
 
 cf = configparser.ConfigParser()
-cf.read("dgcnn_paddle.conf")
+conf_path = os.path.join(os.getcwd(), os.path.pardir, "config", "dgcnn_paddle.conf")
+cf.read(conf_path)
 EPOCH = cf.getint("model", "EPOCH")
 BATCH_SIZE = cf.getint("model", "BATCH_SIZE")
 USE_GPU = cf.getboolean("model", "USE_GPU")
