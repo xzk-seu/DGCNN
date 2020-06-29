@@ -16,7 +16,7 @@ cf.read(conf_path)
 EPOCH = cf.getint("model", "EPOCH")
 BATCH_SIZE = cf.getint("model", "BATCH_SIZE")
 USE_GPU = cf.getboolean("model", "USE_GPU")
-PRINT_PER_BATCH = cf.getint("model", "BATCH_SIZE")
+PRINT_PER_BATCH = cf.getint("model", "PRINT_PER_BATCH")
 LEARNING_RATE = cf.getfloat("model", "LEARNING_RATE")
 
 """
