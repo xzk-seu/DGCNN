@@ -310,7 +310,7 @@ def train(data_generate):
                 # ave_loss = fluid.layers.mean(s1_loss+s2_loss)
                 ave_loss = s1_loss + s2_loss + o1_loss + o2_loss
 
-                if bt_id % 10 == 0:
+                if bt_id % PRINT_PER_BATCH == 0:
                     print('epoch:{}\tbatch:{}\tloss:{}'.format(epoch, bt_id, ave_loss.numpy()))
 
                 ave_loss.backward()
