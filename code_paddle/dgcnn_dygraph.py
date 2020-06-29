@@ -1,3 +1,4 @@
+import configparser
 import os
 
 import numpy as np
@@ -9,11 +10,13 @@ from BiGRU import BiGRU
 from conv1d import Conv1d, DilatedGatedConv1d
 from data_loader import DataGeneratorPaddle
 
-EPOCH = 60
-BATCH_SIZE = 64
-USE_GPU = False
-PRINT_PER_BATCH = 10
-LEARNING_RATE = 1e-5
+cf = configparser.ConfigParser()
+cf.read("dgcnn_paddle.conf")
+EPOCH = cf.getint("model", "EPOCH")
+BATCH_SIZE = cf.getint("model", "BATCH_SIZE")
+USE_GPU = cf.getboolean("model", "USE_GPU")
+PRINT_PER_BATCH = cf.getint("model", "BATCH_SIZE")
+LEARNING_RATE = cf.getfloat("model", "LEARNING_RATE")
 
 """
 预测部分还没写
