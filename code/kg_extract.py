@@ -252,11 +252,11 @@ class PCNN():
 
         t_max = Lambda(seq_maxpool)([t, mask])
 
-        # pc为句子的分类输出
+        # pc为句子的分类输出 t_max.shape = [64, 1, 128]
         pc = Dense(self.data_generate.data_loader.char_size,
-                   activation='relu')(t_max)
+                   activation='relu')(t_max)  # pc.shape = [64, 1, 128]
         pc = Dense(self.data_generate.data_loader.num_classes,
-                   activation='sigmoid')(pc)
+                   activation='sigmoid')(pc)  # pc.shape = [64, 1, 49]
 
         # 取到k1到k2之间长度为6的编码层向量序列，作为GRU的输入
         # GRU输入为（batch, 6, 128）输出为（batch, 256）

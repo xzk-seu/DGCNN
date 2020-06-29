@@ -10,6 +10,7 @@ import attention_model as att
 EPOCH = 60
 BATCH_SIZE = 64
 USE_GPU = False
+PRINT_PER_BATCH = 10
 LEARNING_RATE = 1e-5
 
 """
@@ -36,9 +37,10 @@ class MyModel(fluid.dygraph.Layer):
         self.t2_fc = fluid.dygraph.Linear(self.wv_len, char_size)
 
         self.h_conv1d = Conv1d(input_dim=256, output_dim=self.char_size, kernel_size=3, activation="relu")
-        self.h_conv1d_2 = Conv1d(input_dim=256, output_dim=self.char_size, kernel_size=3, activation="relu")
+        self.h_conv1d_2 = Conv1d(input_dim=512, output_dim=self.char_size, kernel_size=3, activation="relu")
 
-        self.self_att = att.MultiHead_Attention(8, 16)
+        self.self_att_1 = att.MultiHead_Attention(8, 16)
+        self.self_att_2 = att.MultiHead_Attention(8, 16)
 
         # add
         self.drop_out1 = fluid.dygraph.Dropout(p=0.5)
@@ -61,12 +63,19 @@ class MyModel(fluid.dygraph.Layer):
         self.fc_pn3 = fluid.dygraph.Linear(char_size, char_size, act="relu")
         self.fc_pn4 = fluid.dygraph.Linear(char_size, 1, act="sigmoid")
 
+        self.fc_pc1 = fluid.dygraph.Linear(char_size, char_size, act="relu")
+        self.fc_pc2 = fluid.dygraph.Linear(char_size, self.class_num, act="sigmoid")
+
         self.fc_ps1 = fluid.dygraph.Linear(char_size, 1, act="sigmoid")
         self.fc_ps2 = fluid.dygraph.Linear(char_size, 1, act="sigmoid")
 
         self.bigru = BiGRU(self.h_dim)
         self.k1v_emb = fluid.dygraph.Embedding(size=self.pos_emb_size)
         self.k2v_emb = fluid.dygraph.Embedding(size=self.pos_emb_size)
+
+        self.fc_po = fluid.dygraph.Linear(char_size, 1, act="sigmoid")
+        self.fc_po1 = fluid.dygraph.Linear(char_size, self.class_num, act="sigmoid")
+        self.fc_po2 = fluid.dygraph.Linear(char_size, self.class_num, act="sigmoid")
 
     def forward(self, inputs: list):
         t1, t2, k1, k2, mask = inputs
@@ -107,7 +116,7 @@ class MyModel(fluid.dygraph.Layer):
         pn2 = self.fc_pn3(t)
         pn2 = self.fc_pn4(pn2)
 
-        h = self.self_att([t, t, t, mask])
+        h = self.self_att_1([t, t, t, mask])
         h = fluid.layers.concat([t, h], axis=-1)
         h = self.h_conv1d(h)
 
@@ -119,8 +128,8 @@ class MyModel(fluid.dygraph.Layer):
         # subject end
 
         t_max = seq_maxpool([t, mask])
-        pc = fluid.layers.fc(t_max, size=self.char_size, act="relu")
-        pc = fluid.layers.fc(pc, size=self.class_num)
+        pc = self.fc_pc1(t_max)
+        pc = self.fc_pc2(pc)
 
         # k = Lambda(self.get_k_inter, output_shape=(6, t_dim))([t, k1, k2])
         k = get_k_inter([t, k1, k2], 6)
@@ -141,7 +150,7 @@ class MyModel(fluid.dygraph.Layer):
         # h = Concatenate()([t, h, k])  # (batch, len, 128+128+256) = (batch, len, 512)
         # h = Conv1D(self.data_generate.data_loader.char_size,
         #            3, activation='relu', padding='same')(h)  # (batch, len, 128)
-        h = fluid.nets.scaled_dot_product_attention(t, t, t, num_heads=8)
+        h = self.self_att_1([t, t, t, mask])
         h = fluid.layers.concat([t, h, k], -1)
         h = self.h_conv1d_2(h)
 
@@ -153,9 +162,9 @@ class MyModel(fluid.dygraph.Layer):
         #
         # po1 = Lambda(lambda x: x[0] * x[1] * x[2] * x[3])([po, po1, pc, pn1])
         # po2 = Lambda(lambda x: x[0] * x[1] * x[2] * x[3])([po, po2, pc, pn2])
-        po = fluid.layers.fc(h, 1, act="sigmoid")
-        po1 = fluid.layers.fc(h, self.class_num, act="sigmoid")
-        po2 = fluid.layers.fc(h, self.class_num, act="sigmoid")
+        po = self.fc_po(h)
+        po1 = self.fc_po1(h)
+        po2 = self.fc_po2(h)
         po1 = po * po1 * pc * pn1
         po2 = po * po2 * pc * pn2
 
@@ -291,6 +300,8 @@ def train(data_generate):
                 # o1_loss = K.sum(o1_loss * mask) / K.sum(mask)
                 # o2_loss = K.sum(K.binary_crossentropy(o2, po2), 2, keepdims=True)
                 # o2_loss = K.sum(o2_loss * mask) / K.sum(mask)
+                o1 = o1.astype("float32")
+                o2 = o2.astype("float32")
                 o1_loss = fluid.layers.cross_entropy(po1, o1, soft_label=True)
                 o1_loss = fluid.layers.reduce_sum(o1_loss * mask) / fluid.layers.reduce_sum(mask)
                 o2_loss = fluid.layers.cross_entropy(po2, o2, soft_label=True)
