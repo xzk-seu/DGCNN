@@ -46,6 +46,7 @@ class DilatedGatedConv1d(fluid.dygraph.Layer):
 
             g = fluid.layers.sigmoid(g)
             return g * s + (1 - g) * h
+
         seq = _gate([seq, h])
         seq = seq * mask
         return seq

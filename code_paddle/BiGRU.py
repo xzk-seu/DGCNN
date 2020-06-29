@@ -1,6 +1,6 @@
+import numpy as np
 import paddle.fluid as fluid
 import paddle.fluid.layers as layers
-import numpy as np
 
 
 class BiGRU(fluid.dygraph.Layer):
@@ -32,7 +32,3 @@ class BiGRU(fluid.dygraph.Layer):
 
         output = layers.concat([fwd_output, bwd_output], axis=-1)
         return output
-
-
-
-

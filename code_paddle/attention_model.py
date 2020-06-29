@@ -1,7 +1,5 @@
 import numpy as np
 import paddle.fluid as fluid
-from data_loader import DataGenerator
-import paddle
 
 
 class MultiHead_Attention(fluid.dygraph.Layer):
@@ -56,17 +54,16 @@ class MultiHead_Attention(fluid.dygraph.Layer):
         V = self.w_v(V)
 
         Q = fluid.layers.reshape(Q, shape=[bsz, -1, self.n_heads, self.hid_dim //
-                                 self.n_heads])
-        Q = fluid.layers.transpose(Q, perm=[0, 2, 1 ,3])
+                                           self.n_heads])
+        Q = fluid.layers.transpose(Q, perm=[0, 2, 1, 3])
 
         K = fluid.layers.reshape(K, shape=[bsz, -1, self.n_heads, self.hid_dim //
-                                 self.n_heads])
+                                           self.n_heads])
         K = fluid.layers.transpose(K, perm=[0, 2, 1, 3])
-        
-        V = fluid.layers.reshape(Q, shape=[bsz, -1, self.n_heads, self.hid_dim //
-                                 self.n_heads])
-        V = fluid.layers.transpose(V, perm=[0, 2, 1 ,3])
 
+        V = fluid.layers.reshape(Q, shape=[bsz, -1, self.n_heads, self.hid_dim //
+                                           self.n_heads])
+        V = fluid.layers.transpose(V, perm=[0, 2, 1, 3])
 
         # Q, K相乘除以scale
         energy = fluid.layers.matmul(Q, fluid.layers.transpose(K, perm=[0, 1, 3, 2])) / (self.scale)
@@ -87,7 +84,7 @@ class MultiHead_Attention(fluid.dygraph.Layer):
         x = fluid.layers.transpose(x, perm=[0, 2, 1, 3])
         x = fluid.layers.reshape(
             x, shape=[bsz, -1, self.n_heads * (self.hid_dim // self.n_heads)])
-        #第二个Q mask
+        # 第二个Q mask
         x = self.mask(x, q_mask, 'mul')
 
         # x = self.fc(x)

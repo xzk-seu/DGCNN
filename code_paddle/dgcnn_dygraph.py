@@ -255,9 +255,9 @@ def train(data_generate):
 
     with fluid.dygraph.guard(place):
         model = MyModel(max_len=data_generate.data_loader.maxlen,
-                            char_size=data_generate.data_loader.char_size,
-                            char_id_len=len(data_generate.data_loader.char2id),
-                            class_num=data_generate.data_loader.num_classes)
+                        char_size=data_generate.data_loader.char_size,
+                        char_id_len=len(data_generate.data_loader.char2id),
+                        class_num=data_generate.data_loader.num_classes)
 
         # optimizer = fluid.optimizer.SGDOptimizer(learning_rate=LEARNING_RATE,
         # parameter_list=model.parameters())
