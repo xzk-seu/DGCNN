@@ -1,11 +1,13 @@
+import os
+
 import numpy as np
 import paddle.fluid as fluid
-from data_loader import DataGeneratorPaddle
-from conv1d import Conv1d, DilatedGatedConv1d
 from tqdm import tqdm
-import os
-from BiGRU import BiGRU
+
 import attention_model as att
+from BiGRU import BiGRU
+from conv1d import Conv1d, DilatedGatedConv1d
+from data_loader import DataGeneratorPaddle
 
 EPOCH = 60
 BATCH_SIZE = 64
@@ -309,6 +311,11 @@ def train(data_generate):
 
                 # ave_loss = fluid.layers.mean(s1_loss+s2_loss)
                 ave_loss = s1_loss + s2_loss + o1_loss + o2_loss
+                # losss1 = s1_loss.numpy()
+                # losss2 = s2_loss.numpy()
+                # losso1 = o1_loss.numpy()
+                # losso2 = o2_loss.numpy()
+                # losssum = ave_loss.numpy()
 
                 if bt_id % PRINT_PER_BATCH == 0:
                     print('epoch:{}\tbatch:{}\tloss:{}'.format(epoch, bt_id, ave_loss.numpy()))
