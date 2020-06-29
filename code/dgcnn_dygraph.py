@@ -5,6 +5,7 @@ from conv1d import Conv1d, DilatedGatedConv1d
 from tqdm import tqdm
 import os
 from BiGRU import BiGRU
+import attention_model as att
 
 EPOCH = 60
 BATCH_SIZE = 64
@@ -12,8 +13,6 @@ USE_GPU = False
 LEARNING_RATE = 1e-5
 
 """
-预测subject的模型能跑通，但是似乎不收敛（考虑调学习率），
-速度较慢
 预测部分还没写
 """
 
@@ -39,7 +38,35 @@ class MyModel(fluid.dygraph.Layer):
         self.h_conv1d = Conv1d(input_dim=256, output_dim=self.char_size, kernel_size=3, activation="relu")
         self.h_conv1d_2 = Conv1d(input_dim=256, output_dim=self.char_size, kernel_size=3, activation="relu")
 
+        self.self_att = att.MultiHead_Attention(8, 16)
+
+        # add
+        self.drop_out1 = fluid.dygraph.Dropout(p=0.5)
+
+        self.dgcnn1 = DilatedGatedConv1d(char_size, 1)
+        self.dgcnn2 = DilatedGatedConv1d(char_size, 2)
+        self.dgcnn3 = DilatedGatedConv1d(char_size, 5)
+        self.dgcnn4 = DilatedGatedConv1d(char_size, 1)
+        self.dgcnn5 = DilatedGatedConv1d(char_size, 2)
+        self.dgcnn6 = DilatedGatedConv1d(char_size, 5)
+        self.dgcnn7 = DilatedGatedConv1d(char_size, 1)
+        self.dgcnn8 = DilatedGatedConv1d(char_size, 2)
+        self.dgcnn9 = DilatedGatedConv1d(char_size, 5)
+        self.dgcnn10 = DilatedGatedConv1d(char_size, 1)
+        self.dgcnn11 = DilatedGatedConv1d(char_size, 1)
+        self.dgcnn12 = DilatedGatedConv1d(char_size, 1)
+
+        self.fc_pn1 = fluid.dygraph.Linear(char_size, char_size, act="relu")
+        self.fc_pn2 = fluid.dygraph.Linear(char_size, 1, act="sigmoid")
+        self.fc_pn3 = fluid.dygraph.Linear(char_size, char_size, act="relu")
+        self.fc_pn4 = fluid.dygraph.Linear(char_size, 1, act="sigmoid")
+
+        self.fc_ps1 = fluid.dygraph.Linear(char_size, 1, act="sigmoid")
+        self.fc_ps2 = fluid.dygraph.Linear(char_size, 1, act="sigmoid")
+
         self.bigru = BiGRU(self.h_dim)
+        self.k1v_emb = fluid.dygraph.Embedding(size=self.pos_emb_size)
+        self.k2v_emb = fluid.dygraph.Embedding(size=self.pos_emb_size)
 
     def forward(self, inputs: list):
         t1, t2, k1, k2, mask = inputs
@@ -54,25 +81,38 @@ class MyModel(fluid.dygraph.Layer):
 
         t = fluid.layers.elementwise_add(t1, t2)
         t = fluid.layers.elementwise_add(t, pv)
-        t = fluid.layers.dropout(t, 0.5)
+        t = self.drop_out1(t)
         t = t * mask
-        t_dim = fluid.layers.shape(t)[-1]
 
-        dilation_rates = [1, 2, 5, 1, 2, 5, 1, 2, 5, 1, 1, 1]
-        dgcnns = [DilatedGatedConv1d(dim=t_dim, dilation_rate=x) for x in dilation_rates]
-        for dgcnn in dgcnns:
-            t = dgcnn(t, mask)
+        # dilation_rates = [1, 2, 5, 1, 2, 5, 1, 2, 5, 1, 1, 1]
+        # dgcnns = [DilatedGatedConv1d(dim=t_dim, dilation_rate=x) for x in dilation_rates]
+        # for dgcnn in dgcnns:
+        #     t = dgcnn(t, mask)
 
-        pn1 = fluid.layers.fc(t, self.char_size, num_flatten_dims=2, act="relu")
-        pn1 = fluid.layers.fc(pn1, 1, num_flatten_dims=2, act="sigmoid")
-        pn2 = fluid.layers.fc(t, self.char_size, num_flatten_dims=2, act="relu")
-        pn2 = fluid.layers.fc(pn2, 1, num_flatten_dims=2, act="sigmoid")
+        t = self.dgcnn1(t, mask)
+        t = self.dgcnn2(t, mask)
+        t = self.dgcnn3(t, mask)
+        t = self.dgcnn4(t, mask)
+        t = self.dgcnn5(t, mask)
+        t = self.dgcnn6(t, mask)
+        t = self.dgcnn7(t, mask)
+        t = self.dgcnn8(t, mask)
+        t = self.dgcnn9(t, mask)
+        t = self.dgcnn10(t, mask)
+        t = self.dgcnn11(t, mask)
+        t = self.dgcnn12(t, mask)
 
-        h = fluid.nets.scaled_dot_product_attention(t, t, t, num_heads=8)
+        pn1 = self.fc_pn1(t)
+        pn1 = self.fc_pn2(pn1)
+        pn2 = self.fc_pn3(t)
+        pn2 = self.fc_pn4(pn2)
+
+        h = self.self_att([t, t, t, mask])
         h = fluid.layers.concat([t, h], axis=-1)
         h = self.h_conv1d(h)
-        ps1 = fluid.layers.fc(h, 1, num_flatten_dims=2, act="sigmoid")
-        ps2 = fluid.layers.fc(h, 1, num_flatten_dims=2, act="sigmoid")
+
+        ps1 = self.fc_ps1(h)
+        ps2 = self.fc_ps2(h)
 
         ps1 = ps1 * pn1
         ps2 = ps2 * pn2
@@ -84,16 +124,16 @@ class MyModel(fluid.dygraph.Layer):
 
         # k = Lambda(self.get_k_inter, output_shape=(6, t_dim))([t, k1, k2])
         k = get_k_inter([t, k1, k2], 6)
-        k, _ = self.bigru(k, 6)
+        k = self.bigru(k)
 
         # k1v = position_embedding(Lambda(self.position_id)([t, k1]))  # (batch, len, 128)
         # k2v = position_embedding(Lambda(self.position_id)([t, k2]))  # (batch, len, 128)
         # kv = Concatenate()([k1v, k2v])  # 默认按最后一维连接 (batch, len, 256)  相对位置嵌入
         # k = Lambda(lambda x: K.expand_dims(x[0], 1) + x[1])([k, kv])
         k1v = position_id([t, k1])
-        k1v = fluid.layers.embedding(k1v, self.pos_emb_size)
+        k1v = self.k1v_emb(k1v)
         k2v = position_id([t, k2])
-        k2v = fluid.layers.embedding(k2v, self.pos_emb_size)
+        k2v = self.k2v_emb(k2v)
         kv = fluid.layers.concat([k1v, k2v], -1)
         k = fluid.layers.unsqueeze(k, 1) + kv
 
@@ -186,9 +226,11 @@ def position_id(x):
         x, r = x
     else:
         r = 0
+        r = fluid.dygraph.to_variable(np.array([r], dtype="int64"))
 
-    r = fluid.dygraph.to_variable(np.array([r], dtype="int64"))
-    batch_size, sent_len = fluid.layers.cast(fluid.layers.shape(x), dtype="int64")
+    # batch_size, sent_len = fluid.layers.cast(fluid.layers.shape(x), dtype="int64")
+    batch_size = x.shape[0]
+    sent_len = x.shape[1]
     pid = fluid.layers.arange(0, sent_len, dtype="int64")
     pid = fluid.layers.unsqueeze(pid, [0])
     pid = fluid.layers.expand(pid, [int(batch_size), 1])
